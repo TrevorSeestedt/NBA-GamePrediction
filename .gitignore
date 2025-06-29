@@ -217,3 +217,11 @@ figures/
 *.tar.gz
 *.rar
 *.7z 
+
+# Test files and development scripts
+   tests/
+   test_*.py
+   *_test.py
+   debug_*.py
+   explore_*.py
+   check_*.py
