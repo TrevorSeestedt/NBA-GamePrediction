@@ -3,7 +3,7 @@ NBA Data Collector Module
 Fetches data from NBA API and stores in MongoDB
 """
 
-from nba_api.stats.endpoints import leaguegamefinder, teamgamelogs, playergamelogs, leaguestandings
+from nba_api.stats.endpoints import leaguegamefinder, teamgamelogs, playergamelogs, leaguestandings, leaguedashteamstats
 from nba_api.stats.static import teams, players
 import pandas as pd
 import time
