@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  # MongoDB container for storing the NBA data
+  mongodb:
+    image: mongo:7.0
+    container_name: nba_mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      # Credentials for the MongoDB admin user 
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: nba_predictor
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - nba_network
+
+  # Mongo-Express container for visualizing the MongoDB data 
+  mongo-express:
+    # MongoDB Express container for visualizing the MongoDB data
+    image: mongo-express:1.0
+    container_name: nba_mongo_express
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      # Credentials for the MongoDB admin user 
+      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
+      ME_CONFIG_MONGODB_ADMINPASSWORD: password123
+      ME_CONFIG_MONGODB_SERVER: mongodb # Telling MongoExpress to connect to the server named mongodb
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin123
+    depends_on:
+      - mongodb
+    networks:
+      - nba_network
+
+# Volume to store the MongoDB data after the container is stopped
+volumes:
+  mongodb_data:
+
+# Network for the containers to communicate with each other without the need of IP addresses (default bridge network)
+networks:
+  nba_network:
+    driver: bridge 
