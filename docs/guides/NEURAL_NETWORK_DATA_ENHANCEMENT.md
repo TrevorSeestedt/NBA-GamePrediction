@@ -1,18 +1,18 @@
-# 🧠 Neural Network Data Enhancement Guide
+# Neural Network Data Enhancement Guide
 ## Additional Data Sources for NBA Game Prediction Accuracy
 
-### 🎯 Current System Strengths
+### Current System Strengths
 Your existing data collection system is already excellent with:
-- ✅ Basic game statistics and team performance
-- ✅ Advanced efficiency metrics (Offensive/Defensive ratings)
-- ✅ Team chemistry analysis with custom Chemistry Index
-- ✅ Clutch performance in pressure situations
-- ✅ Positional defense matchup analysis
-- ✅ Team standings and recent form
+- Basic game statistics and team performance
+- Advanced efficiency metrics (Offensive/Defensive ratings)
+- Team chemistry analysis with custom Chemistry Index
+- Clutch performance in pressure situations
+- Positional defense matchup analysis
+- Team standings and recent form
 
-### 🚀 Critical Missing Data for Neural Networks
+### Critical Missing Data for Neural Networks
 
-## **1. PLAYER AVAILABILITY & INJURY DATA** ⭐⭐⭐⭐⭐
+## **1. PLAYER AVAILABILITY & INJURY DATA**
 **Impact Level: EXTREME**
 ```python
 # Now implemented in collect_injury_reports()
@@ -26,7 +26,7 @@ data_includes = {
 ```
 **Why Critical:** Injuries explain 60%+ of "upset" predictions. A star player being out changes win probability by 15-25%.
 
-## **2. REST & FATIGUE ANALYSIS** ⭐⭐⭐⭐⭐
+## **2. REST & FATIGUE ANALYSIS** 
 **Impact Level: EXTREME**  
 ```python
 # Implemented in collect_team_rest_fatigue_data()
@@ -40,7 +40,7 @@ data_includes = {
 ```
 **Why Critical:** Teams on back-to-backs win 8-12% less often. Rest advantage is measurable and predictable.
 
-## **3. HOME COURT ADVANTAGE FACTORS** ⭐⭐⭐⭐
+## **3. HOME COURT ADVANTAGE FACTORS**
 **Missing Data:**
 ```python
 home_court_data = {
@@ -54,7 +54,7 @@ home_court_data = {
 ```
 **Implementation:** Scrape attendance data, add altitude/timezone mappings.
 
-## **4. REFEREE ASSIGNMENTS** ⭐⭐⭐⭐
+## **4. REFEREE ASSIGNMENTS**
 **Missing Data:**
 ```python
 # Framework ready in collect_referee_assignments()
@@ -68,7 +68,7 @@ referee_data = {
 ```
 **Impact:** Some referee crews correlate with 5-8% different outcomes. Implement via basketball-reference.com scraping.
 
-## **5. PLAYER MATCHUP ANALYTICS** ⭐⭐⭐⭐
+## **5. PLAYER MATCHUP ANALYTICS**
 **Missing Data:**
 ```python
 matchup_data = {
@@ -84,7 +84,7 @@ matchup_data = {
 ```
 **Implementation:** Expand your existing `collect_player_vs_team_stats()` with individual matchup tracking.
 
-## **6. REAL-TIME MOMENTUM INDICATORS** ⭐⭐⭐
+## **6. REAL-TIME MOMENTUM INDICATORS**
 **Missing Data:**
 ```python
 momentum_data = {
@@ -95,7 +95,7 @@ momentum_data = {
 }
 ```
 
-## **7. COACH & STAFF FACTORS** ⭐⭐⭐
+## **7. COACH & STAFF FACTORS**
 **Missing Data:**
 ```python
 coaching_data = {
@@ -106,7 +106,7 @@ coaching_data = {
 }
 ```
 
-## **8. EXTERNAL FACTORS** ⭐⭐
+## **8. EXTERNAL FACTORS**
 **Missing Data:**
 ```python
 external_data = {
@@ -119,11 +119,11 @@ external_data = {
 }
 ```
 
-### 🎯 Implementation Priority Ranking
+### Implementation Priority Ranking
 
 **IMPLEMENT FIRST (Biggest Impact):**
-1. ✅ **Player Injury/Availability** - Complete! 
-2. ✅ **Rest/Fatigue Analysis** - Complete!
+1. **Player Injury/Availability** - Complete! 
+2. **Rest/Fatigue Analysis** - Complete!
 3. **Referee Assignment Scraping** - Framework ready
 4. **Enhanced Home Court Factors** - Altitude, travel distance
 5. **Individual Player Matchups** - Expand existing system

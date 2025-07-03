@@ -1,4 +1,4 @@
-# NBA Team Chemistry Analysis System 🧪
+# NBA Team Chemistry Analysis System
 
 ## Overview
 This system implements your brilliant team chemistry concept using four key metrics that represent how well NBA teams play together, both offensively and defensively.
@@ -7,7 +7,7 @@ This system implements your brilliant team chemistry concept using four key metr
 
 ### Core Metrics
 
-#### Offensive Chemistry 🏀
+#### Offensive Chemistry
 1. **Screen Assists**: Number of screens that directly lead to teammate scores
    - Measures off-ball movement and teamwork
    - Shows willingness to help teammates get better shots
@@ -16,7 +16,7 @@ This system implements your brilliant team chemistry concept using four key metr
    - The "extra pass" mentality that turns good shots into great shots
    - Indicates unselfish play and ball movement
 
-#### Defensive Chemistry 🛡️
+#### Defensive Chemistry
 3. **Contested Shots**: Hand up to contest shots before release
    - Shows defensive effort and positioning
    - Indicates team communication and help defense
@@ -150,19 +150,19 @@ best_defense = db.team_chemistry_stats.find().sort([
 
 ## Implementation Status
 
-### ✅ Completed
+### Completed
 - Core Chemistry Index calculation algorithm
 - Data collection framework
 - Database schema design
 - Scaling and normalization logic
 - Fallback proxy metrics system
 
-### 🚧 In Progress  
+### In Progress  
 - NBA API endpoint optimization for exact metrics
 - Game-by-game data collection for true moving averages
 - Timeline visualization and trend analysis
 
-### 💡 Future Enhancements
+### Future Enhancements
 - Web scraping from stats.nba.com for precise metrics
 - Real-time chemistry tracking during games
 - Chemistry correlation with team performance
@@ -186,7 +186,7 @@ contested_shots = steals + (blocks * 2)  # Proxy for defensive effort
 deflections = steals * 1.5  # Estimate from steal data
 ```
 
-## Why This Matters for Predictions 🎯
+## Why This Matters for Predictions
 
 Your Chemistry Index captures something traditional stats miss:
 - **Team cohesion** beyond individual talent
@@ -194,4 +194,3 @@ Your Chemistry Index captures something traditional stats miss:
 - **Playoff readiness** (teams that gel at the right time)
 - **Coaching effectiveness** in building team chemistry
 
-This could be a game-changer for NBA predictions! 🏆 
