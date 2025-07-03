@@ -1196,19 +1196,115 @@ class NBADataCollector:
         """
         Collect player injury data that affects game predictions
         
-        YOUR CHALLENGE: Research and implement!
-        
-        Hints:
-        1. NBA API might have injury endpoints (research needed)
-        2. Alternative: Scrape from ESPN/NBA.com injury reports
-        3. Store player availability status per game
-        4. Link to game data for ML features
+        This is CRITICAL for predictions - injuries explain many "upset" results.
+        We'll try multiple approaches to get injury/availability data.
         """
-        logger.info(f"Challenge: Research NBA injury data sources")
-        logger.info("Hint: Check NBA API docs or consider web scraping")
+        logger.info(f"🏥 Collecting injury/availability data for {season}")
+        logger.info("This is crucial for prediction accuracy!")
         
-        # TODO: Your implementation here
-        return 0
+        injury_data = []
+        players_processed = 0
+        
+        try:
+            # Method 1: Try NBA API for player status
+            from nba_api.stats.endpoints import commonallplayers
+            
+            self._rate_limit()
+            
+            # Get all active players for the season
+            all_players = commonallplayers.CommonAllPlayers(
+                season=season,
+                is_only_current_season=1
+            )
+            
+            players_df = all_players.get_data_frames()[0]
+            
+            if not players_df.empty:
+                logger.info(f"Found {len(players_df)} active players")
+                
+                # For each player, try to get recent game logs to determine availability
+                for _, player in players_df.head(50).iterrows():  # Limit to prevent rate limiting
+                    try:
+                        player_id = int(player['PERSON_ID'])
+                        player_name = player['DISPLAY_FIRST_LAST']
+                        
+                        # Get recent games to check availability pattern
+                        self._rate_limit()
+                        
+                        from nba_api.stats.endpoints import playergamelogs
+                        
+                        recent_games = playergamelogs.PlayerGameLogs(
+                            player_id_nullable=player_id,
+                            season_nullable=season,
+                            season_type_nullable='Regular Season'
+                        )
+                        
+                        games_df = recent_games.get_data_frames()[0]
+                        
+                        if not games_df.empty:
+                            # Analyze availability pattern
+                            total_team_games = len(games_df.groupby('GAME_ID'))
+                            player_games = len(games_df)
+                            availability_rate = player_games / max(total_team_games, 1)
+                            
+                            # Look for patterns indicating injury
+                            recent_games_df = games_df.head(10)  # Last 10 games
+                            avg_minutes = recent_games_df['MIN'].mean() if len(recent_games_df) > 0 else 0
+                            
+                            injury_record = {
+                                'player_id': player_id,
+                                'player_name': player_name,
+                                'season': season,
+                                'availability_rate': availability_rate,
+                                'recent_avg_minutes': avg_minutes,
+                                'total_games_played': player_games,
+                                'games_missed_estimated': max(0, total_team_games - player_games),
+                                'injury_status': self._estimate_injury_status(availability_rate, avg_minutes),
+                                'last_game_date': games_df['GAME_DATE'].max() if len(games_df) > 0 else None,
+                                'collected_at': datetime.now()
+                            }
+                            
+                            injury_data.append(injury_record)
+                            players_processed += 1
+                            
+                            if players_processed % 10 == 0:
+                                logger.info(f"Processed {players_processed} players...")
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing player {player.get('DISPLAY_FIRST_LAST', 'Unknown')}: {e}")
+                        continue
+            
+            # Store injury data
+            if injury_data:
+                result = self.db.db.player_injury_data.insert_many(injury_data, ordered=False)
+                logger.info(f"✅ Stored injury data for {len(result.inserted_ids)} players")
+                
+                # Show injury summary
+                injured_players = [p for p in injury_data if p['injury_status'] != 'Healthy']
+                logger.info(f"⚠️ Found {len(injured_players)} players with potential injury concerns")
+                
+                # Show sample of concerning cases
+                concerning = sorted(injured_players, key=lambda x: x['availability_rate'])[:5]
+                for player in concerning:
+                    logger.info(f"   {player['player_name']}: {player['availability_rate']:.1%} availability, "
+                              f"Status: {player['injury_status']}")
+            
+            return players_processed
+            
+        except Exception as e:
+            logger.error(f"Error collecting injury data: {e}")
+            return 0
+    
+    def _estimate_injury_status(self, availability_rate, avg_minutes):
+        """Helper to estimate injury status from playing patterns"""
+        if availability_rate < 0.7:
+            return "Frequently Unavailable"
+        elif availability_rate < 0.85 and avg_minutes < 20:
+            return "Limited Minutes"  
+        elif avg_minutes < 15:
+            return "Minimal Role"
+        else:
+            return "Healthy"
 
     def collect_team_chemistry_stats(self, season='2023-24', moving_window=8):
         """
@@ -1525,6 +1621,245 @@ class NBADataCollector:
             
         except Exception as e:
             logger.error(f"Error creating chemistry timeline: {e}")
+            return 0
+
+    def collect_team_rest_fatigue_data(self, season='2023-24'):
+        """
+        Collect rest/fatigue data - CRITICAL for predictions
+        
+        Teams perform significantly differently based on:
+        - Days of rest between games
+        - Back-to-back games (B2B)
+        - Travel distance
+        - Schedule strength (games in last N days)
+        """
+        logger.info(f"😴 Collecting rest/fatigue data for {season}")
+        logger.info("Rest is a huge factor in NBA performance!")
+        
+        try:
+            # Get all games for season
+            games_cursor = self.db.db.games.find({'SEASON': season}).sort('GAME_DATE', 1)
+            all_games = list(games_cursor)
+            
+            if not all_games:
+                logger.warning("No games found for rest analysis")
+                return 0
+            
+            # Group games by team
+            team_schedules = {}
+            for game in all_games:
+                team_name = game.get('TEAM_NAME')
+                if team_name:
+                    if team_name not in team_schedules:
+                        team_schedules[team_name] = []
+                    team_schedules[team_name].append(game)
+            
+            rest_data = []
+            
+            # Analyze rest patterns for each team
+            for team_name, games in team_schedules.items():
+                # Sort games by date
+                games.sort(key=lambda x: x.get('GAME_DATE', datetime.min))
+                
+                for i, game in enumerate(games):
+                    try:
+                        game_date = game.get('GAME_DATE')
+                        if isinstance(game_date, str):
+                            game_date = pd.to_datetime(game_date)
+                        
+                        # Calculate rest days
+                        days_rest = 0
+                        is_back_to_back = False
+                        games_in_last_7_days = 1  # Current game
+                        
+                        if i > 0:
+                            prev_game_date = games[i-1].get('GAME_DATE')
+                            if isinstance(prev_game_date, str):
+                                prev_game_date = pd.to_datetime(prev_game_date)
+                            
+                            days_rest = (game_date - prev_game_date).days - 1
+                            is_back_to_back = days_rest == 0
+                        
+                        # Count games in last 7 days
+                        for j in range(max(0, i-10), i):  # Look back up to 10 games
+                            prev_date = games[j].get('GAME_DATE')
+                            if isinstance(prev_date, str):
+                                prev_date = pd.to_datetime(prev_date)
+                            
+                            days_ago = (game_date - prev_date).days
+                            if days_ago <= 7:
+                                games_in_last_7_days += 1
+                        
+                        # Determine home/away for travel factor
+                        matchup = game.get('MATCHUP', '')
+                        is_home = 'vs.' in matchup
+                        
+                        rest_record = {
+                            'team_name': team_name,
+                            'game_id': game.get('GAME_ID'),
+                            'game_date': game_date,
+                            'season': season,
+                            'days_rest': days_rest,
+                            'is_back_to_back': is_back_to_back,
+                            'is_home_game': is_home,
+                            'games_in_last_7_days': games_in_last_7_days,
+                            'schedule_difficulty': self._calculate_schedule_difficulty(games_in_last_7_days, days_rest),
+                            'fatigue_index': self._calculate_fatigue_index(days_rest, games_in_last_7_days, is_back_to_back),
+                            'collected_at': datetime.now()
+                        }
+                        
+                        rest_data.append(rest_record)
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing game for {team_name}: {e}")
+                        continue
+            
+            # Store rest data
+            if rest_data:
+                result = self.db.db.team_rest_fatigue.insert_many(rest_data, ordered=False)
+                logger.info(f"✅ Stored rest/fatigue data for {len(result.inserted_ids)} games")
+                
+                # Show interesting patterns
+                b2b_games = [r for r in rest_data if r['is_back_to_back']]
+                high_fatigue = [r for r in rest_data if r['fatigue_index'] > 0.7]
+                
+                logger.info(f"📊 Found {len(b2b_games)} back-to-back games")
+                logger.info(f"😵 Found {len(high_fatigue)} high-fatigue situations")
+            
+            return len(rest_data)
+            
+        except Exception as e:
+            logger.error(f"Error collecting rest/fatigue data: {e}")
+            return 0
+    
+    def _calculate_schedule_difficulty(self, games_in_7_days, days_rest):
+        """Calculate schedule difficulty score (0-1, higher = more difficult)"""
+        # More games in 7 days = harder schedule
+        game_density = min(games_in_7_days / 7.0, 1.0)
+        
+        # Less rest = harder
+        rest_factor = max(0, (3 - days_rest) / 3.0)
+        
+        return (game_density * 0.6 + rest_factor * 0.4)
+    
+    def _calculate_fatigue_index(self, days_rest, games_in_7_days, is_back_to_back):
+        """Calculate team fatigue index (0-1, higher = more fatigued)"""
+        fatigue = 0.0
+        
+        # Back-to-back games add significant fatigue
+        if is_back_to_back:
+            fatigue += 0.4
+        
+        # Low rest adds fatigue
+        if days_rest == 0:
+            fatigue += 0.3
+        elif days_rest == 1:
+            fatigue += 0.2
+        elif days_rest == 2:
+            fatigue += 0.1
+        
+        # High game frequency adds fatigue
+        if games_in_7_days >= 4:
+            fatigue += 0.3
+        elif games_in_7_days >= 3:
+            fatigue += 0.2
+        
+        return min(fatigue, 1.0)
+    
+    def collect_referee_assignments(self, season='2023-24'):
+        """
+        Collect referee assignments - affects game flow and scoring
+        
+        Different refs have different tendencies:
+        - Some call more fouls (affects free throws)
+        - Some favor home teams more than others
+        - Some affect pace of play
+        """
+        logger.info(f"👨‍⚖️ Collecting referee assignment data for {season}")
+        logger.info("Refs significantly impact game outcomes!")
+        
+        try:
+            # This would require web scraping as NBA API doesn't provide ref data
+            # For now, we'll create a framework and note this as a data source to implement
+            
+            referee_data = []
+            
+            # Get all games to attach referee data to
+            games_cursor = self.db.db.games.find({'SEASON': season})
+            games = list(games_cursor)
+            
+            logger.info(f"Found {len(games)} games to collect referee data for")
+            
+            # TODO: Implement web scraping from basketball-reference.com or ESPN
+            # for referee assignments. This is valuable data that impacts predictions.
+            
+            # For now, create placeholder that shows the data structure
+            sample_ref_data = {
+                'game_id': 'sample_game_id',
+                'season': season,
+                'referee_crew': ['John Ref1', 'Jane Ref2', 'Bob Ref3'],
+                'head_referee': 'John Ref1',
+                'referee_experience_avg': 8.5,  # Average years of experience
+                'crew_foul_rate': 0.45,  # Fouls called per possession
+                'crew_home_bias': 0.52,  # Home team win rate with this crew
+                'crew_pace_factor': 98.5,  # Average pace when this crew officiates
+                'collected_at': datetime.now()
+            }
+            
+            logger.info("📋 Referee data structure ready - implement web scraping next")
+            logger.info(f"Sample structure: {list(sample_ref_data.keys())}")
+            
+            return 0  # Return 0 until web scraping is implemented
+            
+        except Exception as e:
+            logger.error(f"Error collecting referee data: {e}")
+            return 0
+    
+    def collect_weather_conditions(self, season='2023-24'):
+        """
+        Collect weather conditions for outdoor arenas/travel
+        
+        While NBA is indoor, weather affects:
+        - Travel delays/cancellations
+        - Player mood and energy
+        - Fan attendance (which affects home court advantage)
+        """
+        logger.info(f"🌤️ Collecting weather impact data for {season}")
+        
+        try:
+            # This would require integration with weather API
+            # Framework for weather data collection
+            
+            weather_data = []
+            
+            # Get all games with location info
+            games_cursor = self.db.db.games.find({'SEASON': season})
+            games = list(games_cursor)
+            
+            # TODO: Integrate with weather API (OpenWeatherMap, etc.)
+            # to get historical weather for game dates/locations
+            
+            sample_weather_data = {
+                'game_id': 'sample_game_id',
+                'season': season,
+                'city': 'Los Angeles',
+                'game_date': datetime.now(),
+                'temperature': 72.0,  # Fahrenheit
+                'precipitation': 0.0,  # Inches
+                'wind_speed': 5.2,  # MPH
+                'weather_condition': 'Clear',
+                'travel_impact_score': 0.1,  # 0-1 scale, 0=no impact
+                'attendance_impact_score': 0.0,  # Estimated impact on attendance
+                'collected_at': datetime.now()
+            }
+            
+            logger.info("🌡️ Weather data structure ready - integrate weather API next")
+            logger.info(f"Sample structure: {list(sample_weather_data.keys())}")
+            
+            return 0  # Return 0 until weather API is integrated
+            
+        except Exception as e:
+            logger.error(f"Error collecting weather data: {e}")
             return 0
 
 # Example usage and testing
