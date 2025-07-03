@@ -348,3 +348,4 @@ class NBADatabase:
             logging.info("No database connection to close.") 
 
 
+ 

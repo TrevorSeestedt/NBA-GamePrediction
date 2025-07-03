@@ -428,6 +428,381 @@ class NBADirectAPIClient:
         
         return results
 
+    def get_clutch_stats(self, season_type='Regular Season'):
+        """
+        Get clutch performance stats for all teams
+        
+        Clutch stats show how teams perform in close games (within 5 points in last 5 minutes).
+        This is crucial for predictions as it reveals which teams excel under pressure.
+        
+        Args:
+            season_type (str): 'Regular Season' or 'Playoffs'
+            
+        Returns:
+            list: Team clutch statistics
+        """
+        logger.info(f"🔥 Collecting clutch stats for {season_type}")
+        
+        # Map season type to URL parameter
+        season_param = season_type.replace(' ', '+')
+        url = f"https://www.nba.com/stats/teams/clutch-traditional?SeasonType={season_param}"
+        
+        logger.info(f"📡 Fetching from: {url}")
+        
+        try:
+            # Make request with proper headers 
+            response = self.session.get(
+                url, 
+                headers=self.headers, 
+                timeout=15,
+                allow_redirects=True
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"❌ HTTP {response.status_code} for clutch stats")
+                return []
+            
+            # Try to extract JSON data from the page
+            clutch_data = self._extract_stats_data(response.text, 'clutch')
+            
+            if clutch_data:
+                logger.info(f"✅ Found {len(clutch_data)} teams with clutch data")
+                return self._process_clutch_data(clutch_data, season_type)
+            
+            # Fallback to HTML parsing
+            logger.info("🔄 Falling back to HTML parsing for clutch stats")
+            return self._parse_clutch_html(response.text, season_type)
+            
+        except Exception as e:
+            logger.error(f"❌ Error collecting clutch stats: {e}")
+            return []
+    
+    def _process_clutch_data(self, raw_data, season_type):
+        """
+        Process raw clutch data into structured format
+        
+        Expected columns: Team, GP, W, L, WIN%, Min, PTS, FGM, FGA, FG%, 
+                         3PM, 3PA, 3P%, FTM, FTA, FT%, OREB, DREB, REB, 
+                         AST, TOV, STL, BLK, BLKA, PF, PFD, +/-
+        """
+        logger.info("🔧 Processing clutch data...")
+        
+        processed_stats = []
+        
+        try:
+            for team_data in raw_data:
+                clutch_record = {
+                    'team_name': team_data.get('TEAM_NAME', ''),
+                    'team_id': int(team_data.get('TEAM_ID', 0)),
+                    'season_type': season_type,
+                    
+                    # Game record in clutch situations
+                    'clutch_games': int(team_data.get('GP', 0)),
+                    'clutch_wins': int(team_data.get('W', 0)),
+                    'clutch_losses': int(team_data.get('L', 0)),
+                    'clutch_win_pct': float(team_data.get('WIN_PCT', 0)),
+                    
+                    # Time spent in clutch situations
+                    'clutch_minutes': float(team_data.get('MIN', 0)),
+                    
+                    # Offensive clutch performance
+                    'clutch_points': float(team_data.get('PTS', 0)),
+                    'clutch_fgm': float(team_data.get('FGM', 0)),
+                    'clutch_fga': float(team_data.get('FGA', 0)),
+                    'clutch_fg_pct': float(team_data.get('FG_PCT', 0)),
+                    'clutch_3pm': float(team_data.get('FG3M', 0)),
+                    'clutch_3pa': float(team_data.get('FG3A', 0)),
+                    'clutch_3p_pct': float(team_data.get('FG3_PCT', 0)),
+                    'clutch_ftm': float(team_data.get('FTM', 0)),
+                    'clutch_fta': float(team_data.get('FTA', 0)),
+                    'clutch_ft_pct': float(team_data.get('FT_PCT', 0)),
+                    
+                    # Rebounding in clutch
+                    'clutch_oreb': float(team_data.get('OREB', 0)),
+                    'clutch_dreb': float(team_data.get('DREB', 0)),
+                    'clutch_reb': float(team_data.get('REB', 0)),
+                    
+                    # Playmaking and defense in clutch
+                    'clutch_ast': float(team_data.get('AST', 0)),
+                    'clutch_tov': float(team_data.get('TOV', 0)),
+                    'clutch_stl': float(team_data.get('STL', 0)),
+                    'clutch_blk': float(team_data.get('BLK', 0)),
+                    'clutch_blka': float(team_data.get('BLKA', 0)),  # Blocks against
+                    'clutch_pf': float(team_data.get('PF', 0)),
+                    'clutch_pfd': float(team_data.get('PFD', 0)),   # Personal fouls drawn
+                    'clutch_plus_minus': float(team_data.get('PLUS_MINUS', 0)),
+                    
+                    # Calculated clutch efficiency metrics
+                    'clutch_offensive_rating': 0,  # Will calculate if we have possessions
+                    'clutch_defensive_rating': 0,
+                    'clutch_ast_to_ratio': 0,
+                    'clutch_ts_pct': 0,  # True shooting percentage
+                    
+                    'collected_at': datetime.now()
+                }
+                
+                # Calculate additional clutch metrics
+                clutch_record = self._calculate_clutch_metrics(clutch_record)
+                processed_stats.append(clutch_record)
+                
+                logger.info(f"✅ {clutch_record['team_name']}: "
+                          f"{clutch_record['clutch_wins']}-{clutch_record['clutch_losses']} "
+                          f"({clutch_record['clutch_win_pct']:.1%}) in clutch")
+                
+        except Exception as e:
+            logger.error(f"❌ Error processing clutch data: {e}")
+        
+        return processed_stats
+    
+    def _calculate_clutch_metrics(self, clutch_record):
+        """Calculate additional clutch performance metrics"""
+        try:
+            # Assist-to-turnover ratio in clutch
+            if clutch_record['clutch_tov'] > 0:
+                clutch_record['clutch_ast_to_ratio'] = clutch_record['clutch_ast'] / clutch_record['clutch_tov']
+            
+            # True shooting percentage in clutch
+            # TS% = PTS / (2 * (FGA + 0.44 * FTA))
+            if clutch_record['clutch_fga'] > 0 or clutch_record['clutch_fta'] > 0:
+                ts_denominator = 2 * (clutch_record['clutch_fga'] + 0.44 * clutch_record['clutch_fta'])
+                if ts_denominator > 0:
+                    clutch_record['clutch_ts_pct'] = clutch_record['clutch_points'] / ts_denominator
+            
+            # Clutch scoring efficiency (points per field goal attempt)
+            if clutch_record['clutch_fga'] > 0:
+                clutch_record['clutch_scoring_efficiency'] = clutch_record['clutch_points'] / clutch_record['clutch_fga']
+            else:
+                clutch_record['clutch_scoring_efficiency'] = 0
+                
+        except Exception as e:
+            logger.error(f"❌ Error calculating clutch metrics: {e}")
+        
+        return clutch_record
+    
+    def _parse_clutch_html(self, html_content, season_type):
+        """Fallback HTML parsing for clutch stats"""
+        logger.info("🔍 Parsing clutch HTML content...")
+        
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Look for tables with clutch data
+            tables = soup.find_all('table')
+            
+            for table in tables:
+                # Try to identify clutch stats table
+                headers = table.find_all(['th', 'td'])
+                header_text = [h.get_text().strip().lower() for h in headers[:10]]
+                
+                # Check if this looks like clutch stats
+                if any(keyword in ' '.join(header_text) for keyword in ['win%', 'clutch', 'pts', 'fg%']):
+                    logger.info("🎯 Found potential clutch stats table")
+                    return self._extract_clutch_from_table(table, season_type)
+            
+            logger.warning("⚠️ No clutch stats table found in HTML")
+            return []
+            
+        except Exception as e:
+            logger.error(f"❌ Error parsing clutch HTML: {e}")
+            return []
+    
+    def _extract_clutch_from_table(self, table, season_type):
+        """Extract clutch data from HTML table"""
+        clutch_stats = []
+        
+        try:
+            rows = table.find_all('tr')
+            if len(rows) < 2:
+                return clutch_stats
+            
+            # Get headers
+            header_row = rows[0]
+            headers = [th.get_text().strip() for th in header_row.find_all(['th', 'td'])]
+            
+            # Process data rows
+            for row in rows[1:]:
+                cells = row.find_all(['td', 'th'])
+                if len(cells) < 5:  # Need minimum columns
+                    continue
+                
+                row_data = [cell.get_text().strip() for cell in cells]
+                
+                # Create clutch record (simplified version)
+                if len(row_data) >= 5:
+                    clutch_record = {
+                        'team_name': row_data[0],
+                        'season_type': season_type,
+                        'clutch_games': self._safe_int(row_data[1]) if len(row_data) > 1 else 0,
+                        'clutch_wins': self._safe_int(row_data[2]) if len(row_data) > 2 else 0,
+                        'clutch_losses': self._safe_int(row_data[3]) if len(row_data) > 3 else 0,
+                        'clutch_win_pct': self._safe_float(row_data[4]) if len(row_data) > 4 else 0,
+                        'collected_at': datetime.now()
+                    }
+                    
+                    clutch_stats.append(clutch_record)
+            
+            logger.info(f"📊 Extracted {len(clutch_stats)} clutch records from HTML")
+            
+        except Exception as e:
+            logger.error(f"❌ Error extracting clutch table data: {e}")
+        
+        return clutch_stats
+
+    def get_positional_defense_stats(self):
+        """
+        Get positional defense statistics from Hashtag Basketball
+        
+        This data shows how each team defends against specific positions (PG, SG, SF, PF, C).
+        Crucial for matchup analysis - if a team is weak defending PGs and opponent has a great PG,
+        that's a significant advantage.
+        
+        Returns:
+            list: Positional defense statistics for all teams and positions
+        """
+        logger.info("🛡️ Collecting positional defense stats from Hashtag Basketball")
+        
+        url = "https://hashtagbasketball.com/nba-defense-vs-position"
+        logger.info(f"📡 Fetching from: {url}")
+        
+        try:
+            # Make request with proper headers
+            response = self.session.get(url, headers=self.headers, timeout=15)
+            
+            if response.status_code != 200:
+                logger.error(f"❌ HTTP {response.status_code} for positional defense")
+                return []
+            
+            logger.info(f"✅ Got response ({len(response.text)} chars)")
+            
+            # Parse the HTML to extract positional defense data
+            return self._parse_positional_defense_html(response.text)
+            
+        except Exception as e:
+            logger.error(f"❌ Error collecting positional defense stats: {e}")
+            return []
+    
+    def _parse_positional_defense_html(self, html_content):
+        """
+        Parse Hashtag Basketball positional defense data from HTML
+        
+        Expected format: Position | Team | PTS | FG% | FT% | 3PM | REB | AST | STL | BLK | TO
+        """
+        logger.info("🔍 Parsing positional defense HTML...")
+        
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Find the main data table (usually the largest table with position data)
+            tables = soup.find_all('table')
+            
+            positional_data = []
+            
+            for table in tables:
+                rows = table.find_all('tr')
+                if len(rows) < 10:  # Skip small tables
+                    continue
+                
+                # Look for header row with expected columns
+                header_row = rows[0] if rows else None
+                if not header_row:
+                    continue
+                
+                headers = [th.get_text().strip() for th in header_row.find_all(['th', 'td'])]
+                
+                # Check if this looks like the positional defense table
+                expected_cols = ['position', 'team', 'pts', 'fg%', 'ft%', '3pm', 'reb', 'ast', 'stl', 'blk', 'to']
+                header_lower = [h.lower() for h in headers]
+                
+                if not any(col in ' '.join(header_lower) for col in ['position', 'team', 'pts']):
+                    continue
+                
+                logger.info(f"📊 Found positional defense table with {len(rows)} rows")
+                logger.info(f"Headers: {headers[:10]}...")
+                
+                # Process data rows
+                for row in rows[1:]:  # Skip header
+                    cells = row.find_all(['td', 'th'])
+                    if len(cells) < 5:  # Need minimum columns
+                        continue
+                    
+                    row_data = [cell.get_text().strip() for cell in cells]
+                    
+                    # Extract position and team info
+                    if len(row_data) >= 10:
+                        try:
+                            position = row_data[0]
+                            team_info = row_data[1]
+                            
+                            # Extract team abbreviation (usually first 3 chars or before space/number)
+                            team_abbrev = team_info.split()[0][:3] if team_info else ''
+                            
+                            # Skip if no valid position or team
+                            if not position or not team_abbrev or len(position) > 2:
+                                continue
+                            
+                            # Create positional defense record
+                            defense_record = {
+                                'position': position.upper(),
+                                'team_abbrev': team_abbrev.upper(),
+                                'team_info': team_info,
+                                
+                                # Defensive stats allowed to this position
+                                'pts_allowed': self._safe_float(row_data[2]),
+                                'fg_pct_allowed': self._safe_float(row_data[3]),
+                                'ft_pct_allowed': self._safe_float(row_data[4]),
+                                'threes_allowed': self._safe_float(row_data[5]),
+                                'reb_allowed': self._safe_float(row_data[6]),
+                                'ast_allowed': self._safe_float(row_data[7]),
+                                'stl_allowed': self._safe_float(row_data[8]),
+                                'blk_allowed': self._safe_float(row_data[9]),
+                                'to_forced': self._safe_float(row_data[10]) if len(row_data) > 10 else 0,
+                                
+                                # Metadata
+                                'source': 'hashtag_basketball',
+                                'collected_at': datetime.now()
+                            }
+                            
+                            positional_data.append(defense_record)
+                            
+                        except Exception as e:
+                            logger.error(f"❌ Error processing row: {e}")
+                            continue
+                
+                # If we found data, break (assuming first valid table is the main one)
+                if positional_data:
+                    break
+            
+            logger.info(f"✅ Extracted {len(positional_data)} positional defense records")
+            
+            # Show sample of what we collected
+            if positional_data:
+                sample_positions = {}
+                for record in positional_data[:15]:  # Show first 15
+                    pos = record['position']
+                    if pos not in sample_positions:
+                        sample_positions[pos] = []
+                    sample_positions[pos].append(f"{record['team_abbrev']} ({record['pts_allowed']:.1f} pts)")
+                
+                for pos, teams in sample_positions.items():
+                    logger.info(f"📊 {pos}: {teams[:3]}...")  # Show first 3 teams per position
+            
+            return positional_data
+            
+        except Exception as e:
+            logger.error(f"❌ Error parsing positional defense HTML: {e}")
+            return []
+    
+    def _safe_float(self, value):
+        """Safely convert value to float, handling various formats"""
+        try:
+            if isinstance(value, str):
+                # Remove common non-numeric characters
+                cleaned = value.replace('%', '').replace(',', '').strip()
+                return float(cleaned)
+            return float(value)
+        except (ValueError, TypeError):
+            return 0.0
+
 # Example usage
 if __name__ == "__main__":
     print("🧪 NBA Advanced API Client - Test Run")

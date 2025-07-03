@@ -20,21 +20,23 @@ logger = logging.getLogger(__name__)
 class NBADataCollector:
     def __init__(self, rate_limit_delay=1.5):
         """
-        Initialize the NBA data collector
+        Initialize NBA data collector
         
         Args:
-            rate_limit_delay (float): Seconds to wait between API calls
+            rate_limit_delay (float): Time (seconds) between API calls
         """
+
         self.rate_limit_delay = rate_limit_delay
         self.teams = teams.get_teams()
+
         self.team_dict = {team['full_name']: team['id'] for team in self.teams}
         
-        # Initialize database connection
+        # Initialize database connection to Docker 
         self.db = NBADatabase()
         
         logger.info(f"NBA Data Collector initialized")
         logger.info(f"Found {len(self.teams)} NBA teams")
-        logger.info(f"⏱Rate limit: {rate_limit_delay}s between requests")
+        logger.info(f"Rate limit between requests: {rate_limit_delay}s ")
     
     def _rate_limit(self):
         """Apply rate limiting between API calls"""
@@ -45,7 +47,7 @@ class NBADataCollector:
         Collect all games for a specific season
         
         Args:
-            season (str): NBA season (e.g., '2023-24')
+            season (str): NBA season ('2023-24')
             season_type (str): 'Regular Season' or 'Playoffs'
             
         Returns:
@@ -64,24 +66,25 @@ class NBADataCollector:
                 season_type_nullable=season_type
             )
             
+            # Getting the data as a list of DataFrames and then accessing the first one
             games_df = gamefinder.get_data_frames()[0]
             
             if games_df.empty:
                 logger.warning(f"No games found for {season} {season_type}")
                 return 0
             
-            # Add season and season type to the data
+            # Add season and season type to dataframe
             games_df['SEASON'] = season
             games_df['SEASON_TYPE'] = season_type
             
-            # Convert date strings to datetime objects
+            # Convert date strings to datetime objects for clean/accessible data
             games_df['GAME_DATE'] = pd.to_datetime(games_df['GAME_DATE'])
             
-            logger.info(f"Fetched {len(games_df)} game records from NBA API")
+            logger.info(f"Game records fetched: {len(games_df)} games")
             logger.info(f"Date range: {games_df['GAME_DATE'].min()} to {games_df['GAME_DATE'].max()}")
             
-            # Store in MongoDB
-            logger.info("Storing games in MongoDB...")
+            # Store in MongoDB 
+            logger.info("Games being stored to MongoDB")
             inserted_count = self.db.insert_games(games_df)
             
             logger.info(f"Successfully collected {inserted_count} new games for {season}")
@@ -91,25 +94,27 @@ class NBADataCollector:
             logger.error(f"Error collecting games for {season}: {e}")
             return 0
     
-    def collect_multiple_seasons(self, seasons=['2023-24', '2022-23'], season_type='Regular Season'):
+    def collect_multiple_seasons(self, seasons=['2024-25', '2023-24', '2022-23'], season_type='Regular Season'):
         """
         Collect games for multiple seasons
         
         Args:
-            seasons (list): List of seasons to collect
-            season_type (str): Type of season
+            seasons (list): List of seasons to collect ('2024-25', '2023-24', '2022-23')
+            season_type (str): 'Regular Season' or 'Playoffs'
             
         Returns:
-            dict: Results for each season
+            dict: Results for each season (games collected)
         """
+
         logger.info(f"Starting multi-season collection")
         logger.info(f"Seasons: {seasons}")
         
         results = {}
         total_collected = 0
         
+        # enumerate can be used to iterate over the list and get the index and the value
         for i, season in enumerate(seasons):
-            logger.info(f"Progress: {i+1}/{len(seasons)} - Collecting {season}")
+            logger.info(f"Progress: {i+1}/{len(seasons)} - Collecting: {season}")
             
             collected = self.collect_season_games(season, season_type)
             results[season] = collected
@@ -120,7 +125,7 @@ class NBADataCollector:
             
             # Rate limiting between seasons
             if i < len(seasons) - 1:  # Don't wait after the last season
-                logger.info(f"⏳ Waiting {self.rate_limit_delay}s before next season...")
+                logger.info(f"Waiting {self.rate_limit_delay}s before next season...")
                 self._rate_limit()
         
         logger.info(f"Multi-season collection complete!")
@@ -134,9 +139,9 @@ class NBADataCollector:
         Collect games for a specific team
         
         Args:
-            team_name (str): Full team name (e.g., 'Los Angeles Lakers')
-            season (str): NBA season
-            season_type (str): Season type
+            team_name (str): Full team name ('Los Angeles Lakers')
+            season (str): NBA season ('2023-24')
+            season_type (str): 'Regular Season' or 'Playoffs'
             
         Returns:
             int: Number of games collected
@@ -309,8 +314,85 @@ class NBADataCollector:
         2. Store wins, losses, win percentage, conference rank
         3. Add timestamp for historical tracking
         """
-        # Your implementation here
-        pass
+        logger.info(f"Collecting team standings for {season}")
+        
+        try:
+            # Step 1: Apply rate limiting
+            self._rate_limit()
+            
+            # Step 2: Get standings from NBA API
+            standings = leaguestandings.LeagueStandings(season=season)
+            standings_df = standings.get_data_frames()[0]
+            
+            if standings_df.empty:
+                logger.warning(f"No standings data found for {season}")
+                return 0
+            
+            logger.info(f"Retrieved standings for {len(standings_df)} teams")
+            
+            # Step 3: Process standings data
+            standings_data = []
+            
+            for _, row in standings_df.iterrows():
+                team_standing = {
+                    'team_id': int(row['TeamID']),
+                    'team_name': row['TeamName'],
+                    'season': season,
+                    
+                    # Record information
+                    'wins': int(row['WINS']),
+                    'losses': int(row['LOSSES']),
+                    'win_pct': float(row['WinPCT']),
+                    'games_played': int(row['WINS']) + int(row['LOSSES']),
+                    
+                    # Conference standings
+                    'conference': row['Conference'],
+                    'conference_rank': int(row['ConferenceRank']),
+                    'division': row['Division'],
+                    'division_rank': int(row['DivisionRank']),
+                    
+                    # Overall league position
+                    'league_rank': int(row.get('LeagueRank', 0)),
+                    
+                    # Additional context
+                    'playoff_rank': int(row.get('PlayoffRank', 0)),
+                    'home_record': row.get('HOME', 'N/A'),
+                    'road_record': row.get('ROAD', 'N/A'),
+                    'last_10': row.get('L10', 'N/A'),
+                    
+                    # Metadata
+                    'collected_at': datetime.now()
+                }
+                
+                standings_data.append(team_standing)
+                
+                logger.info(f"{team_standing['team_name']}: "
+                          f"{team_standing['wins']}-{team_standing['losses']} "
+                          f"({team_standing['win_pct']:.3f}), "
+                          f"{team_standing['conference']} #{team_standing['conference_rank']}")
+            
+            # Step 4: Store in database
+            if standings_data:
+                result = self.db.db.team_standings.insert_many(standings_data, ordered=False)
+                logger.info(f"Stored standings for {len(result.inserted_ids)} teams")
+            
+            # Show conference leaders
+            east_teams = [t for t in standings_data if t['conference'] == 'East']
+            west_teams = [t for t in standings_data if t['conference'] == 'West']
+            
+            if east_teams:
+                east_leader = min(east_teams, key=lambda x: x['conference_rank'])
+                logger.info(f"Eastern Conference Leader: {east_leader['team_name']} ({east_leader['wins']}-{east_leader['losses']})")
+            
+            if west_teams:
+                west_leader = min(west_teams, key=lambda x: x['conference_rank'])
+                logger.info(f"Western Conference Leader: {west_leader['team_name']} ({west_leader['wins']}-{west_leader['losses']})")
+            
+            return len(standings_data)
+            
+        except Exception as e:
+            logger.error(f"Error collecting team standings: {e}")
+            return 0
 
     def validate_collected_data(self, season='2023-24'):
         """
@@ -322,8 +404,161 @@ class NBADataCollector:
         3. Check for missing dates or duplicate games
         4. Validate statistical ranges (points can't be negative, etc.)
         """
-        # Your implementation here
-        pass
+        logger.info(f"Validating collected data for {season}")
+        validation_results = {
+            'season': season,
+            'total_issues': 0,
+            'teams_with_data': 0,
+            'teams_missing': [],
+            'game_count_issues': [],
+            'duplicate_games': 0,
+            'invalid_stats': [],
+            'date_range_issues': []
+        }
+        
+        try:
+            # Step 1: Check if all 30 teams have data
+            logger.info("Checking team coverage...")
+            
+            # Get games from database for this season
+            games_cursor = self.db.db.games.find({'SEASON': season})
+            all_games = list(games_cursor)
+            
+            if not all_games:
+                logger.error(f"No games found for {season}")
+                validation_results['total_issues'] += 1
+                return validation_results
+            
+            # Count unique teams
+            teams_in_db = set()
+            for game in all_games:
+                teams_in_db.add(game.get('TEAM_NAME', game.get('Team')))
+            
+            validation_results['teams_with_data'] = len(teams_in_db)
+            logger.info(f"Found data for {len(teams_in_db)} teams")
+            
+            # Check for missing teams
+            expected_teams = {team['full_name'] for team in self.teams}
+            missing_teams = expected_teams - teams_in_db
+            validation_results['teams_missing'] = list(missing_teams)
+            
+            if missing_teams:
+                logger.warning(f"Missing data for {len(missing_teams)} teams: {missing_teams}")
+                validation_results['total_issues'] += len(missing_teams)
+            
+            # Step 2: Check game counts per team (should be ~82 for regular season)
+            logger.info("Checking game counts per team...")
+            team_game_counts = {}
+            
+            for game in all_games:
+                team_name = game.get('TEAM_NAME', game.get('Team'))
+                if team_name:
+                    team_game_counts[team_name] = team_game_counts.get(team_name, 0) + 1
+            
+            for team, count in team_game_counts.items():
+                expected_games = 82  # Regular season
+                if abs(count - expected_games) > 5:  # Allow some tolerance
+                    issue = f"{team}: {count} games (expected ~{expected_games})"
+                    validation_results['game_count_issues'].append(issue)
+                    logger.warning(issue)
+            
+            validation_results['total_issues'] += len(validation_results['game_count_issues'])
+            
+            # Step 3: Check for duplicate games
+            logger.info("Checking for duplicate games...")
+            game_signatures = set()
+            duplicates = 0
+            
+            for game in all_games:
+                # Create unique signature for each game
+                signature = (
+                    game.get('GAME_ID'),
+                    game.get('TEAM_NAME', game.get('Team')),
+                    game.get('GAME_DATE')
+                )
+                
+                if signature in game_signatures:
+                    duplicates += 1
+                else:
+                    game_signatures.add(signature)
+            
+            validation_results['duplicate_games'] = duplicates
+            if duplicates > 0:
+                logger.warning(f"Found {duplicates} duplicate games")
+                validation_results['total_issues'] += duplicates
+            
+            # Step 4: Validate statistical ranges
+            logger.info("Validating statistical ranges...")
+            
+            for game in all_games:
+                team_name = game.get('TEAM_NAME', game.get('Team', 'Unknown'))
+                
+                # Check points (should be between 50-200)
+                points = game.get('PTS', 0)
+                if points < 50 or points > 200:
+                    issue = f"{team_name}: Invalid points {points}"
+                    validation_results['invalid_stats'].append(issue)
+                
+                # Check field goal percentage (should be 0-1)
+                fg_pct = game.get('FG_PCT', 0)
+                if fg_pct < 0 or fg_pct > 1:
+                    issue = f"{team_name}: Invalid FG% {fg_pct}"
+                    validation_results['invalid_stats'].append(issue)
+                
+                # Check rebounds (should be positive)
+                rebounds = game.get('REB', 0)
+                if rebounds < 0:
+                    issue = f"{team_name}: Negative rebounds {rebounds}"
+                    validation_results['invalid_stats'].append(issue)
+            
+            validation_results['total_issues'] += len(validation_results['invalid_stats'])
+            
+            # Step 5: Check date ranges
+            logger.info("Checking date ranges...")
+            
+            # Convert dates and check range
+            dates = []
+            for game in all_games:
+                game_date = game.get('GAME_DATE')
+                if game_date:
+                    if isinstance(game_date, str):
+                        try:
+                            game_date = pd.to_datetime(game_date)
+                        except:
+                            continue
+                    dates.append(game_date)
+            
+            if dates:
+                min_date = min(dates)
+                max_date = max(dates)
+                date_span = (max_date - min_date).days
+                
+                logger.info(f"Date range: {min_date.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')} ({date_span} days)")
+                
+                # Check if date range makes sense for season
+                if date_span < 180 or date_span > 300:  # Season should be ~6-10 months
+                    issue = f"Unusual date span: {date_span} days"
+                    validation_results['date_range_issues'].append(issue)
+                    validation_results['total_issues'] += 1
+            
+            # Summary
+            logger.info("=== VALIDATION SUMMARY ===")
+            logger.info(f"Season: {season}")
+            logger.info(f"Teams with data: {validation_results['teams_with_data']}/30")
+            logger.info(f"Total games: {len(all_games)}")
+            logger.info(f"Total issues found: {validation_results['total_issues']}")
+            
+            if validation_results['total_issues'] == 0:
+                logger.info("✅ Data validation PASSED - No issues found!")
+            else:
+                logger.warning(f"⚠️ Data validation found {validation_results['total_issues']} issues")
+            
+            return validation_results
+            
+        except Exception as e:
+            logger.error(f"Error during data validation: {e}")
+            validation_results['total_issues'] += 1
+            return validation_results
 
     def update_recent_games(self, days_back=7):
         """
@@ -335,8 +570,105 @@ class NBADataCollector:
         3. Only collect missing games
         4. Handle ongoing games vs completed games
         """
-        # Your implementation here
-        pass
+        logger.info(f"Updating recent games (last {days_back} days)")
+        
+        try:
+            # Step 1: Calculate date range
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days_back)
+            
+            logger.info(f"Date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+            
+            # Step 2: Check what games already exist in database
+            existing_games = set()
+            
+            # Query database for games in date range
+            existing_cursor = self.db.db.games.find({
+                'GAME_DATE': {
+                    '$gte': start_date,
+                    '$lte': end_date
+                }
+            })
+            
+            for game in existing_cursor:
+                # Create unique identifier for each game
+                game_id = game.get('GAME_ID')
+                if game_id:
+                    existing_games.add(game_id)
+            
+            logger.info(f"Found {len(existing_games)} existing games in database")
+            
+            # Step 3: Get recent games from NBA API
+            self._rate_limit()
+            
+            # Use current season (determine based on current date)
+            current_year = datetime.now().year
+            current_month = datetime.now().month
+            
+            # NBA season spans two calendar years (Oct-June)
+            if current_month >= 10:  # October or later = new season starting
+                season = f"{current_year}-{str(current_year + 1)[-2:]}"
+            else:  # Before October = season ending
+                season = f"{current_year - 1}-{str(current_year)[-2:]}"
+            
+            logger.info(f"Using season: {season}")
+            
+            # Get all recent games
+            gamefinder = leaguegamefinder.LeagueGameFinder(
+                season_nullable=season,
+                season_type_nullable='Regular Season',
+                date_from_nullable=start_date.strftime('%m/%d/%Y'),
+                date_to_nullable=end_date.strftime('%m/%d/%Y')
+            )
+            
+            recent_games_df = gamefinder.get_data_frames()[0]
+            
+            if recent_games_df.empty:
+                logger.info("No recent games found from API")
+                return 0
+            
+            logger.info(f"API returned {len(recent_games_df)} recent game records")
+            
+            # Step 4: Filter out games we already have
+            new_games = []
+            
+            for _, game in recent_games_df.iterrows():
+                game_id = game.get('GAME_ID')
+                
+                if game_id not in existing_games:
+                    # Add metadata
+                    game_dict = game.to_dict()
+                    game_dict['SEASON'] = season
+                    game_dict['SEASON_TYPE'] = 'Regular Season'
+                    game_dict['GAME_DATE'] = pd.to_datetime(game_dict['GAME_DATE'])
+                    
+                    new_games.append(game_dict)
+            
+            logger.info(f"Found {len(new_games)} new games to add")
+            
+            # Step 5: Insert new games into database
+            if new_games:
+                # Convert to DataFrame for database insertion
+                new_games_df = pd.DataFrame(new_games)
+                inserted_count = self.db.insert_games(new_games_df)
+                
+                logger.info(f"Successfully inserted {inserted_count} new games")
+                
+                # Show sample of what was added
+                if len(new_games) > 0:
+                    sample_games = new_games[:3]  # Show first 3
+                    logger.info("Sample new games:")
+                    for game in sample_games:
+                        logger.info(f"  {game.get('TEAM_NAME')} vs {game.get('MATCHUP')} on {game.get('GAME_DATE')}")
+                
+                return inserted_count
+            else:
+                logger.info("No new games to add - database is up to date")
+                return 0
+            
+        except Exception as e:
+            logger.error(f"Error updating recent games: {e}")
+            return 0
 
     def collect_team_advanced_stats(self, season='2023-24'):
         """
@@ -360,8 +692,8 @@ class NBADataCollector:
         """
         from nba_api.stats.endpoints import leaguedashteamstats
         
-        logger.info(f"📊 Collecting advanced team stats for {season}")
-        logger.info("🎯 Getting Offensive/Defensive Ratings, Pace, etc.")
+        logger.info(f"Collecting advanced team stats for {season}")
+        logger.info("Getting Offensive/Defensive Ratings, Pace, etc.")
         
         try:
             # Step 1: Apply rate limiting
@@ -379,10 +711,10 @@ class NBADataCollector:
             stats_df = league_stats.get_data_frames()[0]
             
             if stats_df.empty:
-                logger.warning("⚠️ No advanced stats data found")
+                logger.warning("No advanced stats data found")
                 return 0
             
-            logger.info(f"✅ Retrieved advanced stats for {len(stats_df)} teams")
+            logger.info(f"Retrieved advanced stats for {len(stats_df)} teams")
             
             # Step 4: Process each team's data
             all_team_stats = []
@@ -434,22 +766,22 @@ class NBADataCollector:
                     all_team_stats.append(team_advanced_data)
                     teams_processed += 1
                     
-                    logger.info(f"✅ {team_advanced_data['team_name']}: "
+                    logger.info(f"{team_advanced_data['team_name']}: "
                               f"OffRtg={team_advanced_data['off_rating']:.1f} (#{team_advanced_data['off_rating_rank']}), "
                               f"DefRtg={team_advanced_data['def_rating']:.1f} (#{team_advanced_data['def_rating_rank']}), "
                               f"NetRtg={team_advanced_data['net_rating']:.1f}")
                     
                 except Exception as e:
-                    logger.error(f"❌ Error processing team data: {e}")
+                    logger.error(f"Error processing team data: {e}")
                     continue
             
             # Step 6: Store all team stats in database
             if all_team_stats:
                 # Store in separate collection for advanced team stats
                 result = self.db.db.team_advanced_stats.insert_many(all_team_stats, ordered=False)
-                logger.info(f"💾 Stored advanced stats for {len(result.inserted_ids)} teams")
+                logger.info(f"Stored advanced stats for {len(result.inserted_ids)} teams")
             
-            logger.info(f"🎉 Successfully processed {teams_processed} teams")
+            logger.info(f"Successfully processed {teams_processed} teams")
             
             # Show top teams for context
             top_offense = sorted(all_team_stats, key=lambda x: x['off_rating'], reverse=True)[:3]
@@ -457,13 +789,13 @@ class NBADataCollector:
             
             offense_names = [f"{t['team_name']} ({t['off_rating']:.1f})" for t in top_offense]
             defense_names = [f"{t['team_name']} ({t['def_rating']:.1f})" for t in top_defense]
-            logger.info(f"🔥 Top 3 Offensive teams: {offense_names}")
-            logger.info(f"🛡️ Top 3 Defensive teams: {defense_names}")
+            logger.info(f"Top 3 Offensive teams: {offense_names}")
+            logger.info(f"Top 3 Defensive teams: {defense_names}")
             
             return teams_processed
             
         except Exception as e:
-            logger.error(f"❌ Error in team advanced stats collection: {e}")
+            logger.error(f"Error in team advanced stats collection: {e}")
             return 0
     
     def collect_player_vs_team_stats(self, player_name, season='2023-24'):
@@ -739,7 +1071,7 @@ class NBADataCollector:
                     logger.info(f"   Table {i+1}: No positional data detected")
                     continue
                 
-                logger.info(f"   Table {i+1}: Positional data detected! 🎯")
+                logger.info(f"   Table {i+1}: Positional data detected!")
                 
                 # Step 8: Extract data from this table
                 try:
@@ -774,7 +1106,7 @@ class NBADataCollector:
         meaningful positional matchup data. Since every website is different,
         this requires some detective work!
         """
-        logger.info("🔍 Parsing positional table structure...")
+        logger.info("Parsing positional table structure...")
         
         positional_records = []
         
@@ -864,7 +1196,7 @@ class NBADataCollector:
         """
         Collect player injury data that affects game predictions
         
-        🎯 YOUR CHALLENGE: Research and implement!
+        YOUR CHALLENGE: Research and implement!
         
         Hints:
         1. NBA API might have injury endpoints (research needed)
@@ -909,8 +1241,8 @@ class NBADataCollector:
         import numpy as np
         from sklearn.preprocessing import MinMaxScaler
         
-        logger.info(f"🧪 Collecting team chemistry stats for {season}")
-        logger.info(f"📊 Using {moving_window}-game moving average for Chemistry Index")
+        logger.info(f"Collecting team chemistry stats for {season}")
+        logger.info(f"Using {moving_window}-game moving average for Chemistry Index")
         
         try:
             # Step 1: Get advanced tracking stats that include our chemistry metrics
@@ -930,11 +1262,11 @@ class NBADataCollector:
             tracking_df = tracking_stats.get_data_frames()[0]
             
             if not tracking_df.empty:
-                logger.info(f"✅ Found tracking data with columns: {list(tracking_df.columns)[:10]}...")
+                logger.info(f"Found tracking data with columns: {list(tracking_df.columns)[:10]}...")
                 chemistry_data['tracking'] = tracking_df
             
             # Get hustle stats (deflections, contested shots often here)
-            logger.info("📡 Fetching hustle stats...")
+            logger.info("Fetching hustle stats...")
             self._rate_limit()
             
             hustle_stats = leaguedashteamstats.LeagueDashTeamStats(
@@ -946,7 +1278,7 @@ class NBADataCollector:
             hustle_df = hustle_stats.get_data_frames()[0]
             
             if not hustle_df.empty:
-                logger.info(f"✅ Found defense data with columns: {list(hustle_df.columns)[:10]}...")
+                logger.info(f"Found defense data with columns: {list(hustle_df.columns)[:10]}...")
                 chemistry_data['defense'] = hustle_df
             
             # Step 2: Extract chemistry metrics from available data
@@ -984,14 +1316,14 @@ class NBADataCollector:
                         chemistry_records.append(team_data)
                         teams_processed += 1
                         
-                        logger.info(f"📊 {team_data['team_name']}: "
+                        logger.info(f"{team_data['team_name']}: "
                                   f"Screens={team_data['screen_assists']:.1f}, "
                                   f"2ndAst={team_data['secondary_assists']:.1f}, "
                                   f"Contested={team_data['contested_shots']:.1f}, "
                                   f"Deflections={team_data['deflections']:.1f}")
                         
                     except Exception as e:
-                        logger.error(f"❌ Error processing team chemistry data: {e}")
+                        logger.error(f"Error processing team chemistry data: {e}")
                         continue
             
             # Step 4: Calculate Chemistry Index if we have the data
@@ -1000,21 +1332,21 @@ class NBADataCollector:
                 
                 # Step 5: Store in database
                 result = self.db.db.team_chemistry_stats.insert_many(chemistry_records, ordered=False)
-                logger.info(f"💾 Stored chemistry stats for {len(result.inserted_ids)} teams")
+                logger.info(f"Stored chemistry stats for {len(result.inserted_ids)} teams")
                 
                 # Show top chemistry teams
                 top_chemistry = sorted(chemistry_records, key=lambda x: x.get('chemistry_index', 0), reverse=True)[:5]
                 chemistry_leaders = [f"{t['team_name']} ({t.get('chemistry_index', 0):.1f})" for t in top_chemistry]
-                logger.info(f"🏆 Top 5 Chemistry teams: {chemistry_leaders}")
+                logger.info(f"Top 5 Chemistry teams: {chemistry_leaders}")
             
-            logger.info(f"🎉 Successfully processed {teams_processed} teams for chemistry analysis")
+            logger.info(f"Successfully processed {teams_processed} teams for chemistry analysis")
             return teams_processed
             
         except Exception as e:
-            logger.error(f"❌ Error collecting team chemistry stats: {e}")
+            logger.error(f"Error collecting team chemistry stats: {e}")
             
             # Fallback: Create manual chemistry tracking system
-            logger.info("🔄 Falling back to manual chemistry calculation...")
+            logger.info("Falling back to manual chemistry calculation...")
             return self._collect_chemistry_manual(season, moving_window)
     
     def _calculate_chemistry_index(self, chemistry_records, moving_window=8):
@@ -1030,7 +1362,7 @@ class NBADataCollector:
         import numpy as np
         from sklearn.preprocessing import MinMaxScaler
         
-        logger.info("🧮 Calculating Chemistry Index...")
+        logger.info("Calculating Chemistry Index...")
         
         try:
             # Step 1: Extract the four key metrics
@@ -1069,11 +1401,11 @@ class NBADataCollector:
                                                                    np.searchsorted(np.sort(chemistry_scores), 
                                                                                  chemistry_scores[i]) * 100 / len(chemistry_scores)))
             
-            logger.info("✅ Chemistry Index calculated successfully")
+            logger.info("Chemistry Index calculated successfully")
             return chemistry_records
             
         except Exception as e:
-            logger.error(f"❌ Error calculating chemistry index: {e}")
+            logger.error(f"Error calculating chemistry index: {e}")
             return chemistry_records
     
     def _collect_chemistry_manual(self, season, moving_window):
@@ -1083,7 +1415,7 @@ class NBADataCollector:
         This method tries different NBA API endpoints to find the chemistry metrics
         or creates proxy metrics from available data.
         """
-        logger.info("🔧 Using manual chemistry collection method...")
+        logger.info("Using manual chemistry collection method...")
         
         try:
             # Try to get team stats that might have some chemistry indicators
@@ -1133,14 +1465,14 @@ class NBADataCollector:
             # Store in database
             if chemistry_records:
                 result = self.db.db.team_chemistry_stats.insert_many(chemistry_records, ordered=False)
-                logger.info(f"💾 Stored {len(result.inserted_ids)} proxy chemistry records")
+                logger.info(f"Stored {len(result.inserted_ids)} proxy chemistry records")
                 
-                logger.warning("⚠️ Using proxy chemistry metrics - consider implementing game-by-game collection for accurate data")
+                logger.warning("Using proxy chemistry metrics - consider implementing game-by-game collection for accurate data")
             
             return len(chemistry_records)
             
         except Exception as e:
-            logger.error(f"❌ Error in manual chemistry collection: {e}")
+            logger.error(f"Error in manual chemistry collection: {e}")
             return 0
     
     def collect_team_chemistry_timeline(self, team_name, season='2023-24', moving_window=8):
@@ -1158,13 +1490,13 @@ class NBADataCollector:
         Returns:
             int: Number of game records processed
         """
-        logger.info(f"📈 Collecting chemistry timeline for {team_name}")
-        logger.info(f"🎯 Using {moving_window}-game moving average")
+        logger.info(f"Collecting chemistry timeline for {team_name}")
+        logger.info(f"Using {moving_window}-game moving average")
         
         try:
             # Get team ID
             if team_name not in self.team_dict:
-                logger.error(f"❌ Team '{team_name}' not found")
+                logger.error(f"Team '{team_name}' not found")
                 return 0
             
             team_id = self.team_dict[team_name]
@@ -1172,8 +1504,8 @@ class NBADataCollector:
             # This would require game-by-game tracking data
             # For now, we'll create a framework for when that data is available
             
-            logger.info("🚧 Game-by-game chemistry tracking requires additional NBA API endpoints")
-            logger.info("💡 Consider implementing with stats.nba.com scraping for full timeline data")
+            logger.info("Game-by-game chemistry tracking requires additional NBA API endpoints")
+            logger.info("Consider implementing with stats.nba.com scraping for full timeline data")
             
             # Store framework for timeline data
             timeline_data = {
@@ -1187,12 +1519,12 @@ class NBADataCollector:
             }
             
             result = self.db.db.team_chemistry_timeline.insert_one(timeline_data)
-            logger.info(f"📊 Created chemistry timeline framework for {team_name}")
+            logger.info(f"Created chemistry timeline framework for {team_name}")
             
             return 1
             
         except Exception as e:
-            logger.error(f"❌ Error creating chemistry timeline: {e}")
+            logger.error(f"Error creating chemistry timeline: {e}")
             return 0
 
 # Example usage and testing

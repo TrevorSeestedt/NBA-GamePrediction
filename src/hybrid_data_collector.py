@@ -9,6 +9,7 @@ from .advanced_api_client import NBADirectAPIClient
 from .database import NBADatabase
 import pandas as pd
 from datetime import datetime
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -132,18 +133,24 @@ class HybridNBACollector:
         except Exception as e:
             logger.error(f"❌ Error in Phase 4: {e}")
         
-        # Summary
-        logger.info("\n🎉 COLLECTION COMPLETE!")
+        # Phase 5: Collect clutch stats
+        logger.info("\n🔥 PHASE 5: Collecting Clutch Performance Stats")
         logger.info("=" * 60)
         
-        total_nba_api = sum(results['data_sources']['nba_api'].values())
-        total_direct = sum(len(df) for df in results['data_sources']['direct_scraping'].values() if not df.empty)
-        
-        logger.info(f"📊 nba-api records: {total_nba_api}")
-        logger.info(f"🧪 Direct scraping records: {total_direct}")
-        logger.info(f"🏆 Total records: {total_nba_api + total_direct}")
-        
-        return results
+        try:
+            clutch_results = self.collect_clutch_stats(season)
+            results['clutch_stats'] = clutch_results
+            
+            logger.info("🔥 Clutch Stats Collection Summary:")
+            logger.info(f"   Regular Season: {clutch_results['regular_season']} records")
+            logger.info(f"   Playoffs: {clutch_results['playoffs']} records")
+            logger.info(f"   Total Teams: {clutch_results['total_teams']}")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Error in clutch stats collection: {e}")
+            return results
     
     def calculate_team_chemistry_index(self, season='2024-25'):
         """
@@ -239,6 +246,273 @@ class HybridNBACollector:
         except Exception as e:
             logger.error(f"❌ Error calculating chemistry index: {e}")
             return 0
+    
+    def collect_clutch_stats(self, season='2023-24'):
+        """
+        Phase 5: Collect clutch performance statistics
+        
+        Clutch stats show how teams perform in close games (within 5 points in last 5 minutes).
+        This is crucial for matchup predictions as it reveals which teams excel under pressure.
+        
+        Args:
+            season (str): NBA season
+            
+        Returns:
+            dict: Collection results for both regular season and playoffs
+        """
+        logger.info("🔥 PHASE 5: Collecting Clutch Performance Stats")
+        logger.info("=" * 60)
+        
+        results = {
+            'regular_season': 0,
+            'playoffs': 0,
+            'total_teams': 0
+        }
+        
+        try:
+            # Collect regular season clutch stats
+            logger.info("📊 Collecting Regular Season clutch stats...")
+            regular_clutch = self.direct_api_client.get_clutch_stats('Regular Season')
+            
+            if regular_clutch:
+                # Store in database
+                self.db.db.team_clutch_stats.insert_many(regular_clutch, ordered=False)
+                results['regular_season'] = len(regular_clutch)
+                logger.info(f"✅ Stored {len(regular_clutch)} regular season clutch records")
+                
+                # Show top clutch performers
+                top_clutch = sorted(regular_clutch, key=lambda x: x.get('clutch_win_pct', 0), reverse=True)[:5]
+                clutch_leaders = [f"{t['team_name']} ({t.get('clutch_win_pct', 0):.1%})" for t in top_clutch]
+                logger.info(f"🏆 Top 5 Clutch teams (Regular Season): {clutch_leaders}")
+            
+            # Add delay between requests
+            time.sleep(2)
+            
+            # Collect playoff clutch stats
+            logger.info("📊 Collecting Playoff clutch stats...")
+            playoff_clutch = self.direct_api_client.get_clutch_stats('Playoffs')
+            
+            if playoff_clutch:
+                # Store in database
+                self.db.db.team_clutch_stats.insert_many(playoff_clutch, ordered=False)
+                results['playoffs'] = len(playoff_clutch)
+                logger.info(f"✅ Stored {len(playoff_clutch)} playoff clutch records")
+                
+                # Show top playoff clutch performers
+                top_playoff_clutch = sorted(playoff_clutch, key=lambda x: x.get('clutch_win_pct', 0), reverse=True)[:5]
+                playoff_clutch_leaders = [f"{t['team_name']} ({t.get('clutch_win_pct', 0):.1%})" for t in top_playoff_clutch]
+                logger.info(f"🏆 Top 5 Clutch teams (Playoffs): {playoff_clutch_leaders}")
+            
+            results['total_teams'] = len(set([t['team_name'] for t in (regular_clutch + playoff_clutch)]))
+            
+            logger.info("🔥 Clutch Stats Collection Summary:")
+            logger.info(f"   Regular Season: {results['regular_season']} records")
+            logger.info(f"   Playoffs: {results['playoffs']} records")
+            logger.info(f"   Total Teams: {results['total_teams']}")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Error in clutch stats collection: {e}")
+            return results
+    
+    def collect_positional_defense_stats(self):
+        """
+        Phase 6: Collect positional defense statistics
+        
+        This data shows how each team defends against specific positions (PG, SG, SF, PF, C).
+        Critical for matchup analysis - if a team is weak defending guards and opponent has great guards,
+        that's a significant predictive factor.
+        
+        Returns:
+            dict: Collection results including records per position
+        """
+        logger.info("🛡️ PHASE 6: Collecting Positional Defense Stats")
+        logger.info("=" * 60)
+        
+        results = {
+            'total_records': 0,
+            'positions': {},
+            'teams_covered': 0
+        }
+        
+        try:
+            # Collect positional defense data from Hashtag Basketball
+            logger.info("📊 Collecting positional defense data...")
+            positional_data = self.direct_api_client.get_positional_defense_stats()
+            
+            if positional_data:
+                # Store in database
+                self.db.db.positional_defense_stats.insert_many(positional_data, ordered=False)
+                results['total_records'] = len(positional_data)
+                
+                # Analyze what we collected
+                positions_count = {}
+                teams_set = set()
+                
+                for record in positional_data:
+                    pos = record['position']
+                    team = record['team_abbrev']
+                    
+                    if pos not in positions_count:
+                        positions_count[pos] = 0
+                    positions_count[pos] += 1
+                    teams_set.add(team)
+                
+                results['positions'] = positions_count
+                results['teams_covered'] = len(teams_set)
+                
+                logger.info(f"✅ Stored {len(positional_data)} positional defense records")
+                logger.info(f"📊 Positions covered: {list(positions_count.keys())}")
+                logger.info(f"🏀 Teams covered: {results['teams_covered']}")
+                
+                # Show best and worst defenses by position
+                self._analyze_positional_defense(positional_data)
+                
+            else:
+                logger.warning("⚠️ No positional defense data collected")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Error in positional defense collection: {e}")
+            return results
+    
+    def _analyze_positional_defense(self, positional_data):
+        """Analyze and display positional defense insights"""
+        logger.info("\n🔍 POSITIONAL DEFENSE ANALYSIS")
+        logger.info("=" * 60)
+        
+        try:
+            # Group by position
+            by_position = {}
+            for record in positional_data:
+                pos = record['position']
+                if pos not in by_position:
+                    by_position[pos] = []
+                by_position[pos].append(record)
+            
+            # Show best/worst defenses for each position
+            for position in ['PG', 'SG', 'SF', 'PF', 'C']:
+                if position in by_position:
+                    pos_data = by_position[position]
+                    
+                    # Sort by points allowed (lower = better defense)
+                    pos_data.sort(key=lambda x: x['pts_allowed'])
+                    
+                    best_defense = pos_data[:3]  # Top 3 defenses
+                    worst_defense = pos_data[-3:]  # Bottom 3 defenses
+                    
+                    logger.info(f"\n🛡️ {position} Defense:")
+                    
+                    best_teams = [f"{t['team_abbrev']} ({t['pts_allowed']:.1f})" for t in best_defense]
+                    worst_teams = [f"{t['team_abbrev']} ({t['pts_allowed']:.1f})" for t in worst_defense]
+                    
+                    logger.info(f"   Best: {best_teams}")
+                    logger.info(f"   Worst: {worst_teams}")
+        
+        except Exception as e:
+            logger.error(f"❌ Error analyzing positional defense: {e}")
+
+    def run_full_collection(self, season='2023-24'):
+        """
+        Run complete hybrid data collection pipeline
+        
+        Updated to include positional defense stats as Phase 6
+        """
+        logger.info("🚀 STARTING FULL HYBRID NBA DATA COLLECTION")
+        logger.info("=" * 80)
+        logger.info(f"Season: {season}")
+        logger.info(f"Target: Complete NBA prediction dataset")
+        logger.info("=" * 80)
+        
+        collection_summary = {
+            'season': season,
+            'started_at': datetime.now(),
+            'phases_completed': [],
+            'total_records': 0,
+            'errors': []
+        }
+        
+        try:
+            # Phase 1: Basic Game Data (NBA API)
+            logger.info("\n🎯 PHASE 1: Basic Game Data Collection")
+            basic_results = self.collect_basic_games(season)
+            collection_summary['phases_completed'].append('basic_games')
+            collection_summary['basic_games'] = basic_results
+            
+            # Phase 2: Advanced Team Stats (NBA API)
+            logger.info("\n📊 PHASE 2: Advanced Team Statistics")
+            advanced_results = self.collect_advanced_team_stats(season)
+            collection_summary['phases_completed'].append('advanced_stats')
+            collection_summary['advanced_stats'] = advanced_results
+            
+            # Phase 3: Chemistry Stats (Direct NBA.com scraping)
+            logger.info("\n🧪 PHASE 3: Team Chemistry Analysis")
+            chemistry_results = self.collect_chemistry_stats(season)
+            collection_summary['phases_completed'].append('chemistry_stats')
+            collection_summary['chemistry_stats'] = chemistry_results
+            
+            # Phase 4: Chemistry Index Calculation
+            logger.info("\n🧮 PHASE 4: Chemistry Index Calculation")
+            index_results = self.calculate_chemistry_index(season)
+            collection_summary['phases_completed'].append('chemistry_index')
+            collection_summary['chemistry_index'] = index_results
+            
+            # Phase 5: Clutch Performance Stats
+            logger.info("\n🔥 PHASE 5: Clutch Performance Analysis")
+            clutch_results = self.collect_clutch_stats(season)
+            collection_summary['phases_completed'].append('clutch_stats')
+            collection_summary['clutch_stats'] = clutch_results
+            
+            # Phase 6: Positional Defense Stats (NEW!)
+            logger.info("\n🛡️ PHASE 6: Positional Defense Analysis")
+            positional_results = self.collect_positional_defense_stats()
+            collection_summary['phases_completed'].append('positional_defense')
+            collection_summary['positional_defense'] = positional_results
+            
+            # Calculate total records
+            total_records = (
+                basic_results.get('total_games', 0) +
+                advanced_results.get('teams_processed', 0) +
+                chemistry_results.get('teams_processed', 0) +
+                clutch_results.get('regular_season', 0) +
+                clutch_results.get('playoffs', 0) +
+                positional_results.get('total_records', 0)
+            )
+            
+            collection_summary['total_records'] = total_records
+            collection_summary['completed_at'] = datetime.now()
+            collection_summary['duration'] = collection_summary['completed_at'] - collection_summary['started_at']
+            
+            # Final Summary
+            logger.info("\n" + "=" * 80)
+            logger.info("🎉 HYBRID COLLECTION COMPLETE!")
+            logger.info("=" * 80)
+            logger.info(f"✅ Phases completed: {len(collection_summary['phases_completed'])}/6")
+            logger.info(f"📊 Total records collected: {total_records}")
+            logger.info(f"⏱️ Duration: {collection_summary['duration']}")
+            logger.info(f"🏀 Season: {season}")
+            
+            # Show what we collected
+            logger.info("\n📋 Collection Breakdown:")
+            logger.info(f"   • Basic Games: {basic_results.get('total_games', 0)} records")
+            logger.info(f"   • Advanced Stats: {advanced_results.get('teams_processed', 0)} teams")
+            logger.info(f"   • Chemistry Stats: {chemistry_results.get('teams_processed', 0)} teams")
+            logger.info(f"   • Clutch Stats (Regular): {clutch_results.get('regular_season', 0)} teams")
+            logger.info(f"   • Clutch Stats (Playoffs): {clutch_results.get('playoffs', 0)} teams")
+            logger.info(f"   • Positional Defense: {positional_results.get('total_records', 0)} records")
+            
+            # Store collection summary
+            self.db.db.collection_summary.insert_one(collection_summary)
+            
+            return collection_summary
+            
+        except Exception as e:
+            logger.error(f"❌ Critical error in full collection: {e}")
+            collection_summary['errors'].append(str(e))
+            collection_summary['failed_at'] = datetime.now()
+            return collection_summary
     
     def close(self):
         """Close all connections"""
